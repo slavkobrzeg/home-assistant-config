@@ -10,7 +10,7 @@
 
 # Sensors
 sensor:
-  # Use OpenEVSE RAPI API to Retrieve the active charging current
+  # Use OpenEVSE RAPI API to Retrieve the active charging energy
   # https://www.home-assistant.io/components/sensor.rest/
   # Example: 
   #  curl --digest --user 'user:pass' 'http://openevse.local./r?json=1&rapi=$GU'
@@ -28,6 +28,21 @@ sensor:
     json_attributes: [ 'cmd', 'ret' ]
     value_template: >-
       {{- state_attr("sensor.openevse_rapi_gu", "ret") -}}
+  
+  # Get OpenEVSE min/max current from RAPI
+  - platform: rest
+    name: "OpenEVSE RAPI $GC"
+    resource: 'http://openevse.local./r?json=1&rapi=$GC'
+    force_update: yes
+    authentication: basic
+    username: !secret OPENEVSE_USERNAME
+    password: !secret OPENEVSE_PASSWORD
+    headers:
+        User-Agent: Home Assistant
+        Content-Type: application/json
+    json_attributes: [ 'cmd', 'ret' ]
+    value_template: >-
+      {{- state_attr("sensor.openevse_rapi_gc", "ret") -}}
 
   # Custom Sensors
   - platform: template
@@ -38,18 +53,18 @@ sensor:
         unit_of_measurement: 'kWh'
         value_template: >-
           {%- if states('sensor.openevse_rapi_gu') == 'unknown' -%}
-            None
+            unknown
           {%- else -%}
             {%- set ret = state_attr('sensor.openevse_rapi_gu', 'ret') -%}
             {%- if ret == None -%}
-              None
+              unknown
             {%- else -%}
               {%- set rgx = '(?<=^\$OK )[0-9]+' -%}
               {%- if ret|regex_search(rgx) -%}
                 {%- set v = ret | regex_findall_index(rgx) -%}
                 {{- (v|float / 3600000)|round(2) -}}
               {%- else -%}
-                None
+                unknown
               {%- endif -%}
             {%- endif -%}
           {%- endif -%}
@@ -156,6 +171,7 @@ switch:
 input_number:
   openevse_current:
     name: "OpenEVSE Current"
+    unit_of_measurement: "A"
     min: 10
     max: 40
     step: 1
@@ -175,13 +191,67 @@ input_select:
     icon: mdi:target
 
 automation old:
+  - alias: Update OpenEVSE Min/Max Current
+    id: update_openevse_min_max_current
+    trigger:
+      platform: state
+      entity_id: sensor.openevse_rapi_gc
+    condition:
+      condition: template
+      value_template: >-
+        {{ state_attr('sensor.openevse_rapi_gc', 'ret') | regex_match('^\$OK [0-9]+ [0-9]+') }}
+    action:
+      - service: input_number.set_min
+        data_template:
+          entity_id: input_number.openevse_current
+          value: >-
+            {%- set ret = state_attr('sensor.openevse_rapi_gc', 'ret') -%}
+            {%- set rgx = '(?<=^\$OK )([0-9]+) ([0-9]+)' -%}
+            {%- set v = ret | regex_findall_index(rgx) -%}
+            {{- v[0]|int -}}
+      - service: input_number.set_max
+        data_template:
+          entity_id: input_number.openevse_current
+          # Restrict the max to 40A
+          value: >-
+            {%- set ret = state_attr('sensor.openevse_rapi_gc', 'ret') -%}
+            {%- set rgx = '(?<=^\$OK )([0-9]+) ([0-9]+)' -%}
+            {%- set v = ret | regex_findall_index(rgx) -%}
+            {{- [40, v[1]|int]|min -}}
+
+  - alias: Update OpenEVSE Charge Current
+    id: update_openevse_charge_current
+    trigger:
+      platform: state
+      entity_id: sensor.openevse_pilot_current
+    action:
+      service: input_number.set_value
+      data_template:
+        entity_id: input_number.openevse_current
+        value: >-
+          {{- states('sensor.openevse_pilot_current')|int -}}
+
+  - alias: Set OpenEVSE Charge Current
+    id: set_openevse_charge_current
+    trigger:
+      platform: state
+      entity_id: input_number.openevse_current
+    action:
+      service: mqtt.publish
+      data_template:
+        topic: "openevse/rapi/in/$SC"
+        retain: true
+        # Set temporary current value
+        payload: >-
+          {{- states('input_number.openevse_current')|int }} V
+
   - alias: Update OpenEVSE Service Level
     id: update_openevse_service_level
     trigger:
       platform: mqtt
       topic: "openevse/rapi/in/$SL"
     action:
-    - service: input_select.select_option
+      service: input_select.select_option
       data_template:
         entity_id: input_select.openevse_service_level
         option: >-
@@ -190,7 +260,6 @@ automation old:
               {{ state_attr("input_select.openevse_service_level", 'options')[loop.index - 1] }}
             {%- endif %}
           {%- endfor %}
-    - service: 
           
   - alias: Set OpenEVSE Service Level
     id: set_openevse_service_level

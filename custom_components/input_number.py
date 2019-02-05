@@ -35,6 +35,8 @@ ATTR_STEP = 'step'
 ATTR_MODE = 'mode'
 
 SERVICE_SET_VALUE = 'set_value'
+SERVICE_SET_MIN = 'set_min'
+SERVICE_SET_MAX = 'set_max'
 SERVICE_INCREMENT = 'increment'
 SERVICE_DECREMENT = 'decrement'
 
@@ -46,7 +48,6 @@ SERVICE_SET_VALUE_SCHEMA = vol.Schema({
     vol.Optional(ATTR_ENTITY_ID): cv.entity_ids,
     vol.Required(ATTR_VALUE): vol.Coerce(float),
 })
-
 
 def _cv_input_number(cfg):
     """Configure validation helper for input number (voluptuous)."""
@@ -106,6 +107,16 @@ async def async_setup(hass, config):
     component.async_register_entity_service(
         SERVICE_SET_VALUE, SERVICE_SET_VALUE_SCHEMA,
         'async_set_value'
+    )
+
+    component.async_register_entity_service(
+        SERVICE_SET_MIN, SERVICE_SET_VALUE_SCHEMA,
+        'async_set_min'
+    )
+
+    component.async_register_entity_service(
+        SERVICE_SET_MAX, SERVICE_SET_VALUE_SCHEMA,
+        'async_set_max'
     )
 
     component.async_register_entity_service(
@@ -198,6 +209,31 @@ class InputNumber(RestoreEntity):
                             num_value, self._minimum, self._maximum)
             return
         self._current_value = num_value
+        await self.async_update_ha_state()
+
+    async def async_set_min(self, value):
+        """Set new min value."""
+        minimum = float(value)
+        if minimum >= self._maximum:
+            _LOGGER.warning("Invalid minimum: %s (must be lower than maximum %s)",
+                            minimum, self._maximum)
+            return
+        # Adjust value to minimim if it is less than the new minimum
+        if minimum > self._current_value:
+            self._current_value = minimum
+        self._minimum = minimum
+        await self.async_update_ha_state()
+
+    async def async_set_max(self, value):
+        """Set new max value."""
+        maximum = float(value)
+        if self._minimum >= maximum:
+            _LOGGER.warning("Invalid maximum: %s (must be higher than minimum %s)",
+                            maximum, self._minimum)
+            return
+        if maximum < self._current_value:
+            self._current_value = maximum
+        self._maximum = maximum
         await self.async_update_ha_state()
 
     async def async_increment(self):
